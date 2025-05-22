@@ -4,6 +4,8 @@ using System.Linq;
 using System.Reflection;
 using System.Text.Json;
 using Client.Main.Controllers;
+using Client.Main.Helpers;
+using Client.Main.Models;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 
@@ -91,15 +93,25 @@ namespace Client.Main.Controls.UI.Game
             UpdateLabelPosition();
         }
 
+
         public override void Draw(GameTime gameTime)
         {
-            if (!Visible)
+            if (Status != GameControlStatus.Ready || !Visible || Texture == null)
                 return;
 
-            SpriteBatch sprite = GraphicsManager.Instance.Sprite;
-            sprite.Begin(SpriteSortMode.Deferred, BlendState.NonPremultiplied);
-            sprite.Draw(Texture, DisplayRectangle, TextureRectangle, Color.White * Alpha);
-            sprite.End();
+            var sb = GraphicsManager.Instance.Sprite;
+
+            using (new SpriteBatchScope(
+                   sb,
+                   SpriteSortMode.Deferred,
+                   BlendState.NonPremultiplied,
+                   SamplerState.PointClamp))
+            {
+                sb.Draw(Texture,
+                        DisplayRectangle,
+                        TextureRectangle,
+                        Color.White * Alpha);
+            }
 
             _label.Draw(gameTime);
         }
@@ -107,7 +119,7 @@ namespace Client.Main.Controls.UI.Game
         private void UpdateLabelPosition()
         {
             _label.X = X + (ViewSize.X - _label.ControlSize.X) / 2 + 10;
-            _label.Y = Y + (ViewSize.Y - _label.ControlSize.Y) / 2 + 16;
+            _label.Y = Y + (ViewSize.Y - _label.ControlSize.Y) / 2;
         }
 
         private LayoutInfo LoadLayoutInfo()

@@ -16,6 +16,7 @@ namespace Client.Main.Controls.UI
             Interactive = true;
             TileWidth = 54;
             TileHeight = 30;
+            ViewSize = new Point(TileWidth, TileHeight); // Ensure ViewSize is set from tile dimensions
             TileY = 0;
             BlendState = Blendings.Alpha;
             TexturePath = "Interface/message_ok_b_all.tga";
@@ -25,9 +26,9 @@ namespace Client.Main.Controls.UI
         {
             base.Update(gameTime);
 
-            if (Scene.MouseControl == this && IsMousePressed)
+            if (IsMouseOver && IsMousePressed) // check IsMousePressed from GameControl for click visual
                 TileY = 2;
-            else if (Scene.MouseControl == this)
+            else if (IsMouseOver) // hover state
                 TileY = 1;
             else
                 TileY = 0;

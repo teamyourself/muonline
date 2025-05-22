@@ -1,6 +1,4 @@
-using Client.Main.Controllers;
 using Client.Main.Controls;
-using Client.Main.Objects.Effects;
 using Client.Main.Objects.Worlds.Icarus;
 using Microsoft.Xna.Framework;
 using System.Threading.Tasks;
@@ -10,8 +8,8 @@ namespace Client.Main.Worlds
     public class IcarusWorld : WalkableWorldControl
     {
         private static readonly Color CLEAR_COLOR = new Color(3f / 256f, 25f / 256f, 44f / 256f, 1f);
-        private CloudLightEffect _cloudLight;
-        private JointThunderEffect _jointThunder;
+        // private CloudLightEffect _cloudLight;
+        // private JointThunderEffect _jointThunder;
 
         public IcarusWorld() : base(worldIndex: 11)
         {
@@ -31,7 +29,25 @@ namespace Client.Main.Worlds
 
         public override void AfterLoad()
         {
-            Walker.Location = new Vector2(14, 12);
+            Vector2 defaultSpawn = new Vector2(14, 12);
+            Walker.Reset();
+            bool shouldUseDefaultSpawn = false;
+            if (MuGame.Network == null ||
+                MuGame.Network.CurrentState == Core.Client.ClientConnectionState.Initial ||
+                MuGame.Network.CurrentState == Core.Client.ClientConnectionState.Disconnected)
+            {
+                shouldUseDefaultSpawn = true;
+            }
+            else if (Walker.Location == Vector2.Zero)
+            {
+                shouldUseDefaultSpawn = true;
+            }
+            if (shouldUseDefaultSpawn)
+            {
+                Walker.Location = defaultSpawn;
+            }
+            Walker.MoveTargetPosition = Walker.TargetPosition;
+            Walker.Position = Walker.TargetPosition;
             base.AfterLoad();
         }
 

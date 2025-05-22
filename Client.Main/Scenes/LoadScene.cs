@@ -1,319 +1,350 @@
-﻿using System;
-using System.Collections.Generic;
+using System;
+using System.Buffers;
+using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
+using System.Net;
 using System.Net.Http;
-using System.Text.Json.Serialization;
+using System.Net.Http.Headers;
+using System.Threading;
 using System.Threading.Tasks;
 using Client.Main.Controllers;
 using Client.Main.Controls.UI;
+using Client.Main.Helpers;
+using Client.Main.Models;
 using Client.Main.Worlds;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 
 namespace Client.Main.Scenes
 {
-    public class Metadata
-    {
-        public long TotalSize { get; set; }
-        public double Version { get; set; }
-        public required List<FileMetadata> Files { get; set; }
-    }
-
-    public class FileMetadata
-    {
-        public required string Path { get; set; }
-        public required long Size { get; set; }
-    }
-
-    [JsonSourceGenerationOptions(WriteIndented = true, PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
-    [JsonSerializable(typeof(Metadata))]
-    [JsonSerializable(typeof(List<FileMetadata>))]
-    public partial class MetadataContext : JsonSerializerContext
-    {
-    }
-
     public class LoadScene : BaseScene
     {
-        #region Fields & Constants
+        #region ── stałe & pola ──────────────────────────────────────────────
+
+        private const int BufferSize = 1 * 1024 * 1024;              // 1 MB
+        private static readonly TimeSpan ProgressTick = TimeSpan.FromMilliseconds(200);
+
+        private static readonly HttpClient Http;
 
         private LabelControl _statusLabel;
-        private float _progress; // value from 0 to 1
+        private float _progress;        // 0-1
         private string _statusText;
 
-        // Scene background
         private Texture2D _backgroundTexture;
-
-        // BasicEffect for drawing
         private BasicEffect _basicEffect;
 
-        // Progress bar constants – width will be calculated dynamically
         private const int ProgressBarHeight = 30;
         private const int ProgressBarY = 700;
-
-        private string _dataPathUrl = Constants.DataPathUrl;
+        private readonly string _dataPathUrl = Constants.DataPathUrl;
 
         #endregion
 
-        #region Constructor & Loading
+        #region ── HttpClient ─────────────────────
+
+        static LoadScene()
+        {
+            var handler = new SocketsHttpHandler
+            {
+                AutomaticDecompression = DecompressionMethods.All,
+                EnableMultipleHttp2Connections = true,
+                SslOptions =
+                {
+                    RemoteCertificateValidationCallback = (_,__,___,____) => true // DEV-only
+                }
+            };
+
+            Http = new HttpClient(handler)
+            {
+                Timeout = Timeout.InfiniteTimeSpan,
+                DefaultRequestVersion = HttpVersion.Version30,
+                DefaultVersionPolicy = HttpVersionPolicy.RequestVersionOrLower
+            };
+
+            Http.DefaultRequestHeaders.UserAgent.Add(
+                new ProductInfoHeaderValue("MuClient", "1.0"));
+        }
+
+        #endregion
+
+        #region
 
         public LoadScene()
         {
             _progress = 0f;
             _statusText = "Initializing...";
 
-            // Increased font size for better readability
             _statusLabel = new LabelControl
             {
                 Text = _statusText,
-                X = 50,
-                Y = MuGame.Instance.Height - 50,
-                FontSize = 24, // larger font
-                TextColor = Color.White
+                X = 50, // Margin from left
+                Y = MuGame.Instance.Height - 80, // Position above progress bar
+                FontSize = 20, // Slightly smaller for more text
+                TextColor = Color.White,
+                ShadowColor = Color.Black * 0.7f,
+                HasShadow = true,
+                ShadowOffset = new Vector2(1, 1)
             };
-
             Controls.Add(_statusLabel);
         }
 
+        #endregion
+
+        #region
+
         public override async Task Load()
         {
-            Console.WriteLine("LoadScene.Load");
-
-            // Load the background
+            await base.Load();
             _backgroundTexture = MuGame.Instance.Content.Load<Texture2D>("Background");
 
-            // BasicEffect initialization
             _basicEffect = new BasicEffect(MuGame.Instance.GraphicsDevice)
             {
                 VertexColorEnabled = true,
-                Projection = Matrix.CreateOrthographicOffCenter(0, MuGame.Instance.Width, MuGame.Instance.Height, 0, 0, 1),
+                Projection = Matrix.CreateOrthographicOffCenter
+                             (0, MuGame.Instance.Width, MuGame.Instance.Height, 0, 0, 1),
                 View = Matrix.Identity,
                 World = Matrix.Identity
             };
 
-            await ChangeWorldAsync<LoadWorld>();
-            await base.Load();
+            var loadWorld = new LoadWorld();
+            Controls.Add(loadWorld);
+            await loadWorld.Initialize();
+            World = loadWorld;
         }
 
         public override void AfterLoad()
         {
             base.AfterLoad();
-            // Using Constants.DataPath instead of AppDomain.CurrentDomain.BaseDirectory
-            string extractPath = Client.Main.Constants.DataPath;
-            Console.WriteLine($"ExtractPath: {extractPath}");
-
-            // Ensure that the folder exists
-            Directory.CreateDirectory(extractPath);
-
-            // Start downloading resources
-            StartDownloadingDataZip();
+            _ = PerformInitialLoadAndTransitionAsync();
         }
 
         #endregion
 
-        #region Download & Extraction
+        #region Core Loading Orchestration
 
-        private async Task DownloadFileWithProgressAsync(string url, string destination)
+        private async Task PerformInitialLoadAndTransitionAsync()
         {
-            HttpClient client = new HttpClient();
+            string localZip = Path.Combine(Constants.DataPath, "Data.zip");
+            string extractPath = Constants.DataPath;
+            string url = _dataPathUrl;
+
+            bool alreadyHaveAssets = Directory.EnumerateFileSystemEntries(Constants.DataPath)
+                                             .Any(e => !e.EndsWith("Data.zip",
+                                                                   StringComparison.OrdinalIgnoreCase));
+
+            if (alreadyHaveAssets)
+            {
+                UpdateStatus("Assets found – skipping download.", 1);
+                await Task.Delay(500);
+            }
+            else
+            {
+                try
+                {
+                    UpdateStatus("Downloading assets…", 0);
+                    await DownloadFileWithProgressAsync(url, localZip, UpdateStatus);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Primary URL failed: {ex.Message}");
+                    url = Constants.DefaultDataPathUrl;
+                    UpdateStatus("Retrying with default URL…", 0);
+                    await DownloadFileWithProgressAsync(url, localZip, UpdateStatus);
+                }
+
+                UpdateStatus("Extracting assets…", 0);
+                await ExtractZipFileWithProgressAsync(localZip, extractPath, UpdateStatus);
+
+                UpdateStatus("Cleaning up…", 1);
+                if (File.Exists(localZip)) File.Delete(localZip);
+            }
+
+            await TransitionToEntrySceneAsync();
+        }
+
+        private async Task TransitionToEntrySceneAsync()
+        {
+            Type nextSceneType = Constants.ENTRY_SCENE == typeof(LoadScene)
+                                   ? typeof(LoginScene)
+                                   : Constants.ENTRY_SCENE;
+
+            UpdateStatus($"Loading {nextSceneType.Name}…", 0);
+
+            var nextScene = (BaseScene)Activator.CreateInstance(nextSceneType)!;
+            await nextScene.InitializeWithProgressReporting(UpdateStatus);
+
+            UpdateStatus("Transitioning…", 1);
+            await Task.Delay(300);
+            MuGame.Instance.ChangeScene(nextScene);
+        }
+
+        #endregion
+
+        #region ── DownloadFileWithProgressAsync ─────────────────────────────
+
+        private async Task DownloadFileWithProgressAsync(
+            string url, string destination,
+            Action<string, float>? report,
+            CancellationToken ct = default)
+        {
+            byte[] buffer = ArrayPool<byte>.Shared.Rent(BufferSize);
+
             try
             {
-                // Download response headers with ResponseHeadersRead option
-                var response = await client.GetAsync(url, HttpCompletionOption.ResponseHeadersRead);
-                response.EnsureSuccessStatusCode();
+                using var resp = await Http.GetAsync(url,
+                               HttpCompletionOption.ResponseHeadersRead, ct);
+                resp.EnsureSuccessStatusCode();
 
-                var totalSize = response.Content.Headers.ContentLength;
-                var totalBytesRead = 0L;
-                var buffer = new byte[81920];
+                long total = resp.Content.Headers.ContentLength ?? -1;
+                long done = 0;
+                var sw = Stopwatch.StartNew();
 
-                using (var contentStream = await response.Content.ReadAsStreamAsync())
-                using (var fileStream = new FileStream(destination, FileMode.Create, FileAccess.Write, FileShare.None, 81920, true))
+                await using var src = await resp.Content.ReadAsStreamAsync(ct);
+                await using var dst = new FileStream(destination, FileMode.Create,
+                                    FileAccess.Write, FileShare.None,
+                                    BufferSize, FileOptions.Asynchronous | FileOptions.SequentialScan);
+
+                while (true)
                 {
-                    int bytesRead;
-                    while ((bytesRead = await contentStream.ReadAsync(buffer, 0, buffer.Length)) > 0)
+                    int n = await src.ReadAsync(buffer.AsMemory(0, BufferSize), ct);
+                    if (n == 0) break;
+
+                    await dst.WriteAsync(buffer.AsMemory(0, n), ct);
+                    done += n;
+
+                    if (sw.Elapsed >= ProgressTick)
                     {
-                        await fileStream.WriteAsync(buffer, 0, bytesRead);
-                        totalBytesRead += bytesRead;
-                        float progress = totalSize.HasValue ? (float)totalBytesRead / totalSize.Value : 0;
-                        UpdateStatus($"Downloading assets... {(progress * 100):F0}%", progress);
+                        sw.Restart();
+                        float pr = total > 0 ? (float)done / total : 0;
+                        report?.Invoke($"Downloading... {pr * 100:F0}% ({done / 1_048_576:F1} MB)", pr);
                     }
-                    await fileStream.FlushAsync();
                 }
-
-                if (totalSize.HasValue && totalBytesRead != totalSize.Value)
-                {
-                    throw new Exception($"Incomplete download. Expected {totalSize.Value} bytes, but received {totalBytesRead}.");
-                }
+                await dst.FlushAsync(ct);
+                report?.Invoke("Download complete.", 1);
             }
             finally
             {
-                client.Dispose();
+                ArrayPool<byte>.Shared.Return(buffer);
             }
         }
 
-        private async void StartDownloadingDataZip()
-        {
-            string localZipPath = Path.Combine(Client.Main.Constants.DataPath, "Data.zip");
-            string extractPath = Client.Main.Constants.DataPath;
-            string zipUrl = _dataPathUrl;
+        #endregion
 
-            // Checking if the folder already contains files (other than Data.zip)
-            bool hasOtherEntries = Directory.EnumerateFileSystemEntries(Client.Main.Constants.DataPath)
-                                            .Any(entry => !string.Equals(Path.GetFileName(entry), "Data.zip", StringComparison.OrdinalIgnoreCase));
+        #region ── ExtractZipFileWithProgressAsync ───────────────────────────
 
-            if (hasOtherEntries)
-            {
-                Console.WriteLine("Assets already downloaded, skipping download and extraction.");
-                MuGame.Instance.ChangeScene<LoginScene>();
-                return;
-            }
-
-            try
-            {
-                UpdateStatus("Downloading game assets...", 0);
-                // Attempt to download data from the primary URL
-                await DownloadFileWithProgressAsync(zipUrl, localZipPath);
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Download error from {zipUrl}: {ex.Message}");
-                // Set alternative URL
-                zipUrl = Constants.DefaultDataPathUrl;
-                UpdateStatus("Primary URL failed. Trying default assets URL...", 0);
-                await DownloadFileWithProgressAsync(zipUrl, localZipPath);
-            }
-
-            try
-            {
-                UpdateStatus("Download complete. Extracting assets...", 0);
-                await ExtractZipFileWithProgressAsync(localZipPath, extractPath);
-                UpdateStatus("Extraction complete!", 1);
-
-                if (File.Exists(localZipPath))
-                    File.Delete(localZipPath);
-
-                await Task.Delay(500);
-                MuGame.Instance.ChangeScene<LoginScene>();
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error during extraction: {ex.Message}");
-                UpdateStatus($"Error: {ex.Message}", _progress);
-            }
-        }
-
-        private async Task ExtractZipFileWithProgressAsync(string zipPath, string extractPath)
+        private async Task ExtractZipFileWithProgressAsync(
+            string zip, string outDir,
+            Action<string, float> report,
+            CancellationToken ct = default)
         {
             await Task.Run(() =>
             {
-                using (var archive = ZipFile.OpenRead(zipPath))
+                using var archive = ZipFile.OpenRead(zip);
+                var files = archive.Entries.Where(e => !string.IsNullOrEmpty(e.Name)).ToArray();
+                int done = 0; var sw = Stopwatch.StartNew();
+
+                foreach (var entry in files)
                 {
-                    int totalEntries = archive.Entries.Count;
-                    int processedEntries = 0;
+                    ct.ThrowIfCancellationRequested();
 
-                    foreach (var entry in archive.Entries)
+                    string rel = entry.FullName.TrimStart("Data/".ToCharArray())
+                                                 .TrimStart("Data\\".ToCharArray());
+                    string full = Path.Combine(outDir, rel);
+
+                    Directory.CreateDirectory(Path.GetDirectoryName(full)!);
+                    entry.ExtractToFile(full, true);
+
+                    done++;
+                    if (sw.Elapsed >= ProgressTick)
                     {
-                        try
-                        {
-                            // Get entry path and remove "Data/" prefix if present
-                            string relativePath = entry.FullName;
-                            if (relativePath.StartsWith("Data/") || relativePath.StartsWith("Data\\"))
-                            {
-                                relativePath = relativePath.Substring(5); // remove "Data/" (5 characters)
-                            }
-
-                            string fullPath = Path.Combine(extractPath, relativePath);
-
-                            // If the entry is a directory, create it
-                            if (entry.FullName.EndsWith("/") || entry.FullName.EndsWith("\\"))
-                            {
-                                Directory.CreateDirectory(fullPath);
-                            }
-                            else
-                            {
-                                Directory.CreateDirectory(Path.GetDirectoryName(fullPath));
-                                entry.ExtractToFile(fullPath, overwrite: true);
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            Console.WriteLine($"Error extracting {entry.FullName}: {ex.Message}");
-                        }
-                        processedEntries++;
-                        float progress = (float)processedEntries / totalEntries;
-                        UpdateStatus($"Extracting assets... {(progress * 100):F0}%", progress);
+                        sw.Restart();
+                        float pr = (float)done / files.Length;
+                        report?.Invoke($"Extracting... {pr * 100:F0}% ({entry.Name})", pr);
                     }
                 }
+                report?.Invoke("Extracting completed.", 1);
+            }, ct);
+        }
+
+        #endregion
+
+        #region ── UpdateStatus ──────────────────────
+
+        private void UpdateStatus(string text, float progress)
+        {
+            MuGame.ScheduleOnMainThread(() =>
+            {
+                _statusText = text;
+                _progress = MathHelper.Clamp(progress, 0, 1);
+                _statusLabel.Text = _statusText;
             });
         }
 
-        #endregion
-
-        #region Helpers
-
-        private void UpdateStatus(string status, float progress)
+        public override void Update(GameTime gameTime)
         {
-            _statusText = status;
-            _progress = progress;
-            if (_statusLabel != null)
-            {
-                _statusLabel.Text = status;
-            }
+            if (Status == GameControlStatus.NonInitialized)
+                _ = Initialize();
+
+            base.Update(gameTime);
         }
 
-        private VertexPositionColor[] CreateRectangleVertices(Vector2 pos, Vector2 size, Color color)
-        {
-            return new VertexPositionColor[]
-            {
-                new VertexPositionColor(new Vector3(pos.X, pos.Y, 0), color),
-                new VertexPositionColor(new Vector3(pos.X + size.X, pos.Y, 0), color),
-                new VertexPositionColor(new Vector3(pos.X, pos.Y + size.Y, 0), color),
-                new VertexPositionColor(new Vector3(pos.X + size.X, pos.Y + size.Y, 0), color)
-            };
-        }
-
-        #endregion
-
-        #region Drawing
+        private VertexPositionColor[] CreateRect(Vector2 pos, Vector2 size, Color col) =>
+        [
+            new(new Vector3(pos.X,           pos.Y,            0), col),
+            new(new Vector3(pos.X+size.X,    pos.Y,            0), col),
+            new(new Vector3(pos.X,           pos.Y+size.Y,     0), col),
+            new(new Vector3(pos.X+size.X,    pos.Y+size.Y,     0), col)
+        ];
 
         public override void Draw(GameTime gameTime)
         {
-            if (_basicEffect != null)
+            if (_basicEffect == null || _backgroundTexture == null)
             {
-                DrawSceneBackground();
-                DrawProgressBar();
+                GraphicsDevice.Clear(Color.Black);
+                if (_statusLabel.Status == GameControlStatus.Ready)
+                {
+                    using (new SpriteBatchScope(GraphicsManager.Instance.Sprite))
+                        _statusLabel.Draw(gameTime);
+                }
+                return;
             }
-            base.Draw(gameTime);
+
+            DrawSceneBackground();
+            DrawProgressBar();
+
+            using (new SpriteBatchScope(GraphicsManager.Instance.Sprite,
+                                        SpriteSortMode.Deferred,
+                                        BlendState.AlphaBlend,
+                                        SamplerState.PointClamp,
+                                        DepthStencilState.None))
+            {
+                if (_statusLabel.Visible) _statusLabel.Draw(gameTime);
+            }
         }
 
         private void DrawSceneBackground()
         {
-            if (_backgroundTexture != null)
+            using (new SpriteBatchScope(GraphicsManager.Instance.Sprite))
             {
-                var spriteBatch = GraphicsManager.Instance.Sprite;
-                spriteBatch.Begin();
-                spriteBatch.Draw(_backgroundTexture,
+                GraphicsManager.Instance.Sprite.Draw(
+                    _backgroundTexture,
                     new Rectangle(0, 0, MuGame.Instance.Width, MuGame.Instance.Height),
                     Color.White);
-                spriteBatch.End();
             }
         }
 
-        // Progress bar drawn on the full screen width
         private void DrawProgressBar()
         {
-            if (_basicEffect == null)
-                return;
+            int w = MuGame.Instance.Width - 100;
+            int x = 50;
 
-            // Use the full screen width
-            int fullWidth = MuGame.Instance.Width;
-            var bgPos = new Vector2(0, ProgressBarY);
-            var bgSize = new Vector2(fullWidth, ProgressBarHeight);
-            var progressSize = new Vector2(fullWidth * _progress, ProgressBarHeight);
-
-            var bgVertices = CreateRectangleVertices(bgPos, bgSize, Color.DarkGray);
-            var progressVertices = CreateRectangleVertices(bgPos, progressSize, Color.Green);
+            var bg = CreateRect(new Vector2(x, ProgressBarY),
+                                     new Vector2(w, ProgressBarHeight),
+                                     Color.DarkSlateGray);
+            var prog = CreateRect(new Vector2(x, ProgressBarY),
+                                     new Vector2(w * _progress, ProgressBarHeight),
+                                     Color.ForestGreen);
 
             _basicEffect.TextureEnabled = false;
             _basicEffect.VertexColorEnabled = true;
@@ -321,23 +352,11 @@ namespace Client.Main.Scenes
             foreach (var pass in _basicEffect.CurrentTechnique.Passes)
             {
                 pass.Apply();
-                MuGame.Instance.GraphicsDevice.DrawUserPrimitives(
-                    PrimitiveType.TriangleStrip,
-                    bgVertices,
-                    0,
-                    2);
-            }
-            foreach (var pass in _basicEffect.CurrentTechnique.Passes)
-            {
-                pass.Apply();
-                MuGame.Instance.GraphicsDevice.DrawUserPrimitives(
-                    PrimitiveType.TriangleStrip,
-                    progressVertices,
-                    0,
-                    2);
+                GraphicsDevice.DrawUserPrimitives(PrimitiveType.TriangleStrip, bg, 0, 2);
+                if (_progress > 0)
+                    GraphicsDevice.DrawUserPrimitives(PrimitiveType.TriangleStrip, prog, 0, 2);
             }
         }
-
         #endregion
     }
 }

@@ -1,22 +1,18 @@
-﻿using Client.Main.Content;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
+using Client.Main.Content;
+using Client.Main.Controllers;
+using Client.Main.Models;
+using Microsoft.Xna.Framework;
 using System.Threading.Tasks;
 
 namespace Client.Main.Objects.Monsters
 {
-    public class GoldenDragon : MonsterObject
+    [NpcInfo(44, "Golden Dragon")]
+    public class GoldenDragon : RedDragon // Inherits from RedDragon
     {
         public GoldenDragon()
         {
+            Scale = 0.9f; // Set according to C++ Setting_Monster
         }
-
-        public override async Task Load()
-        {
-            Model = await BMDLoader.Instance.Prepare($"Monster/Monster32.bmd");
-            await base.Load();
-        }
+        // Load() and sounds inherited
     }
 }

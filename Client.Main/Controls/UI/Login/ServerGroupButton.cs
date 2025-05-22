@@ -1,6 +1,5 @@
 ﻿using Microsoft.Xna.Framework.Input;
 using Microsoft.Xna.Framework;
-using Microsoft.Xna.Framework.Graphics;
 using Client.Main.Models;
 
 namespace Client.Main.Controls.UI.Login
@@ -10,7 +9,7 @@ namespace Client.Main.Controls.UI.Login
         private readonly LabelControl _label;
 
         public byte Index { get; set; }
-        public string Name { get => _label.Text; set => _label.Text = value; }
+        public new string Name { get => _label.Text; set => _label.Text = value; }
         public bool Selected { get; set; }
 
         public ServerGroupButton()
@@ -33,11 +32,17 @@ namespace Client.Main.Controls.UI.Login
         {
             base.Update(gameTime);
 
+            if (Scene == null)
+            {
+                TileY = 0;
+                return;
+            }
+
             if (Selected)
                 TileY = 3;
-            else if (MuGame.Instance.Mouse.LeftButton == ButtonState.Pressed && Scene.MouseControl == this)
+            else if (IsMouseOver && IsMousePressed) // check IsMousePressed for click visual
                 TileY = 2;
-            else if (Scene.MouseControl == this)
+            else if (IsMouseOver) // hover state
                 TileY = 1;
             else
                 TileY = 0;
