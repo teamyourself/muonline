@@ -21,17 +21,17 @@ namespace Client.Main.Scenes
         private readonly List<(string Name, CharacterClassNumber Class, ushort Level)> _characters;
         private SelectWorld _selectWorld;
         private LabelControl _infoLabel;
-        private NetworkManager _networkManager;
+        private readonly NetworkManager _networkManager;
         private ILogger<SelectCharacterScene> _logger;
         private (string Name, CharacterClassNumber Class, ushort Level)? _selectedCharacterInfo = null;
         private LoadingScreenControl _loadingScreen;
         private bool _initialLoadComplete = false;
 
         // Constructors
-        public SelectCharacterScene(List<(string Name, CharacterClassNumber Class, ushort Level)> characters)
+        public SelectCharacterScene(List<(string Name, CharacterClassNumber Class, ushort Level)> characters, NetworkManager networkManager)
         {
             _characters = characters ?? new List<(string Name, CharacterClassNumber Class, ushort Level)>();
-            _networkManager = MuGame.Network;
+            _networkManager = networkManager ?? throw new ArgumentNullException(nameof(networkManager));
             _logger = MuGame.AppLoggerFactory.CreateLogger<SelectCharacterScene>();
 
             _infoLabel = new LabelControl
@@ -80,6 +80,11 @@ namespace Client.Main.Scenes
                 World = _selectWorld;
                 UpdateLoadProgress("Select World Initialized.", 0.35f); // Zwiększony postęp po inicjalizacji świata
                 _logger.LogInformation("--- SelectCharacterScene: SelectWorld initialized and set.");
+
+                if (_selectWorld.Terrain != null)
+                {
+                    _selectWorld.Terrain.AmbientLight = 0.6f;
+                }
 
                 if (_selectWorld != null && _characters.Any())
                 {
@@ -270,7 +275,7 @@ namespace Client.Main.Scenes
                 {
                     try
                     {
-                        MuGame.Instance.ChangeScene(new GameScene(characterInfo));
+                        MuGame.Instance.ChangeScene(new GameScene(characterInfo, _networkManager));
                         _logger.LogInformation("<<< SelectCharacterScene.HandleEnteredGame (UI Thread): ChangeScene to GameScene call completed.");
                     }
                     catch (Exception ex)

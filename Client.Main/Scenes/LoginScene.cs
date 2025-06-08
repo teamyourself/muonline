@@ -88,6 +88,11 @@ namespace Client.Main.Scenes
 
             progressCallback?.Invoke("Login World Loaded.", 0.70f);
 
+            if (loginWorld.Terrain != null)
+            {
+                loginWorld.Terrain.AmbientLight = 0.2f;
+            }
+
             progressCallback?.Invoke("Playing Login Theme...", 0.75f);
             SoundController.Instance.PlayBackgroundMusic("Music/login_theme.mp3");
 
@@ -371,7 +376,7 @@ namespace Client.Main.Scenes
                     try
                     {
                         _logger.LogInformation("--- Creating SelectCharacterScene instance...");
-                        var newScene = new SelectCharacterScene(characters);
+                        var newScene = new SelectCharacterScene(characters, _networkManager);
                         _logger.LogInformation("--- SelectCharacterScene instance created.");
                         _logger.LogInformation("--- Calling ChangeScene...");
                         MuGame.Instance.ChangeScene(newScene);
